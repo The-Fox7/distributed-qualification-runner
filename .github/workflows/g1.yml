@@ -1,0 +1,83 @@
+name: Sethia G1 zero-euro qualification
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: sethia-g1-zero-euro
+  cancel-in-progress: true
+
+jobs:
+  shard:
+    name: preflight-shard-${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CONTROL_URL: https://backgrounds-invited-ages-spanking.trycloudflare.com
+      BUNDLE_SHA256: 334920130ecba2dc4eadd0f4ac3268b151de9e0d93e79ff5d4c518d1bbea9ea2
+      G1_MODE: preflight
+      G1_EXPECTED_HOSTS: "2"
+      G1_SHARD: ${{ matrix.shard }}
+      G1_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Obtain signed GitHub identity and fetch private qualification bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/sethia
+          oidc_json="$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sethia-stage8-g1")"
+          oidc="$(printf '%s' "$oidc_json" | jq -r .value)"
+          test -n "$oidc"
+          echo "::add-mask::$oidc"
+          curl -fsS -H "Authorization: Bearer $oidc" "$CONTROL_URL/bundle" -o work/bundle.tar.gz
+          actual="$(sha256sum work/bundle.tar.gz | awk '{print $1}')"
+          test "$actual" = "$BUNDLE_SHA256"
+          tar -xzf work/bundle.tar.gz -C work/sethia
+          curl -fsS -H "Authorization: Bearer $oidc" "$CONTROL_URL/config" -o work/sethia/g1-config.json
+          curl -fsS -H "Authorization: Bearer $oidc" "$CONTROL_URL/runner" -o work/sethia/g1-runner.cjs
+
+      - name: Install pinned Sethia dependencies
+        shell: bash
+        working-directory: work/sethia
+        run: npm ci --no-audit --no-fund
+
+      - name: Run distributed shard
+        id: qualify
+        shell: bash
+        working-directory: work/sethia
+        run: node g1-runner.cjs g1-config.json g1-result.json
+
+      - name: Return raw evidence to private controller
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f work/sethia/g1-result.json ]; then
+            printf '{"schema":"sethia.stage8.g1-runner-missing.v1","mode":"%s","runId":"%s","shard":%s,"verified":false,"error":"RESULT_MISSING","externalSpendCents":0}\n' "$G1_MODE" "$G1_RUN_ID" "$G1_SHARD" > work/sethia/g1-result.json
+          fi
+          oidc_json="$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sethia-stage8-g1")"
+          oidc="$(printf '%s' "$oidc_json" | jq -r .value)"
+          test -n "$oidc"
+          echo "::add-mask::$oidc"
+          curl -fsS -X POST -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" --data-binary @work/sethia/g1-result.json "$CONTROL_URL/report" >/dev/null
+
+      - name: Remove ephemeral credentials
+        if: always()
+        shell: bash
+        run: rm -f work/sethia/g1-config.json work/bundle.tar.gz
