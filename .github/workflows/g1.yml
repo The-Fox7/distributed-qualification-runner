@@ -50,14 +50,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CONTROL_URL: https://jesus-administrators-innovations-mozilla.trycloudflare.com
       BUNDLE_SHA256: 6a6c2a341fa1eebaea8c3f4704e235d8ca943565c9498403154c3f044e63391d
       G1_MODE: exact
-      G1_EXPECTED_HOSTS: "8"
+      G1_EXPECTED_HOSTS: "2"
       G1_SHARD: ${{ matrix.shard }}
       G1_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
