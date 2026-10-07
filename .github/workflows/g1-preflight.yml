@@ -1,0 +1,89 @@
+name: g1-private-access-preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact private candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.SETHIA_REPOSITORY }}
+          ref: ${{ secrets.SETHIA_REF }}
+          ssh-key: ${{ secrets.SETHIA_DEPLOY_KEY }}
+          path: sethia
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Verify frozen candidate identity
+        shell: bash
+        env:
+          EXPECTED_SOURCE_HEAD: ${{ secrets.G1_SOURCE_HEAD }}
+        run: |
+          set -euo pipefail
+          cd sethia
+          test "$(git rev-parse HEAD)" = "fb962f346ee857b745139f186ab019490315901b"
+          test "$(git rev-parse HEAD^{tree})" = "59c8d10d4f5673e10fd83efe7d156dc72bb5dff0"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_SOURCE_HEAD"
+          echo "PRIVATE_CANDIDATE_IDENTITY=PASS"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: sethia/.nvmrc
+          cache: npm
+          cache-dependency-path: sethia/package-lock.json
+
+      - name: Install exact dependencies
+        working-directory: sethia
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify Neon connectivity without exposing credentials
+        working-directory: sethia
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const { Client } = require('pg');
+          (async () => {
+            const c = new Client({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 15000 });
+            await c.connect();
+            const r = await c.query('select 1 as ok');
+            await c.end();
+            if (r.rows[0]?.ok !== 1) process.exit(2);
+            console.log('NEON_CONNECTIVITY=PASS');
+          })().catch(e => { console.error('NEON_CONNECTIVITY=FAIL:' + e.name); process.exit(1); });
+          NODE
+
+      - name: Emit sanitized preflight evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cat > evidence/preflight.json <<EOF
+          {
+            "schema":"sethia.stage8.g1-public-runner-preflight.v1",
+            "candidateCommit":"fb962f346ee857b745139f186ab019490315901b",
+            "candidateTree":"59c8d10d4f5673e10fd83efe7d156dc72bb5dff0",
+            "runnerOs":"${RUNNER_OS}",
+            "runnerArch":"${RUNNER_ARCH}",
+            "runnerName":"${RUNNER_NAME}",
+            "verified":true,
+            "externalSpendCents":0
+          }
+          EOF
+
+      - name: Upload sanitized evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-private-access-preflight
+          path: evidence/preflight.json
+          retention-days: 3
