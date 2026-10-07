@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
@@ -14,7 +15,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  wait-for-stale:
+    name: Wait for older G1 runs to release Neon
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait until no older qualification run is active
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/g1.yml/runs?per_page=100"
+          for attempt in $(seq 1 140); do
+            payload="$(curl -fsS --retry 3 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$api")"
+            active="$(printf '%s' "$payload" | jq --argjson current "$GITHUB_RUN_ID" '[.workflow_runs[] | select(.id != $current and (.status == "in_progress" or .status == "queued"))] | length')"
+            if [ "$active" -eq 0 ]; then
+              echo "OLDER_G1_RUNS=NONE"
+              exit 0
+            fi
+            echo "OLDER_G1_RUNS_ACTIVE=$active"
+            sleep 15
+          done
+          echo "OLDER_G1_RUNS_TIMEOUT"
+          exit 1
+
   shard:
+    needs: wait-for-stale
     name: exact-shard-${{ matrix.shard }}
     strategy:
       fail-fast: false
