@@ -45,7 +45,6 @@ jobs:
           exit 1
 
   shard:
-    if: ${{ false }}
     needs: wait-for-stale
     name: exact-shard-${{ matrix.shard }}
     strategy:
