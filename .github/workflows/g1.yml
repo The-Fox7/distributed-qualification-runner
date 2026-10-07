@@ -10,10 +10,6 @@ permissions:
   contents: read
   id-token: write
 
-concurrency:
-  group: sethia-g1-zero-euro
-  cancel-in-progress: true
-
 jobs:
   wait-for-stale:
     name: Wait for older G1 runs to release Neon
