@@ -1,5 +1,3 @@
-# tsx-process-tree-fix-2
-# bootstrap-race-fix-1
 name: Sethia G1 zero-euro qualification
 
 on:
@@ -13,22 +11,22 @@ permissions:
 
 concurrency:
   group: sethia-g1-zero-euro-${{ github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   shard:
-    name: preflight-shard-${{ matrix.shard }}
+    name: exact-shard-${{ matrix.shard }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       CONTROL_URL: https://backgrounds-invited-ages-spanking.trycloudflare.com
       BUNDLE_SHA256: 334920130ecba2dc4eadd0f4ac3268b151de9e0d93e79ff5d4c518d1bbea9ea2
-      G1_MODE: preflight
-      G1_EXPECTED_HOSTS: "2"
+      G1_MODE: exact
+      G1_EXPECTED_HOSTS: "8"
       G1_SHARD: ${{ matrix.shard }}
       G1_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
@@ -59,13 +57,13 @@ jobs:
         working-directory: work/sethia
         run: npm ci --no-audit --no-fund
 
-      - name: Run distributed shard
+      - name: Run exact distributed shard
         id: qualify
         shell: bash
         working-directory: work/sethia
         run: node g1-runner.cjs g1-config.json g1-result.json
 
-      - name: Return raw evidence to private controller
+      - name: Return raw evidence and external monitoring event
         if: always()
         shell: bash
         run: |
@@ -78,8 +76,10 @@ jobs:
           test -n "$oidc"
           echo "::add-mask::$oidc"
           curl -fsS -X POST -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" --data-binary @work/sethia/g1-result.json "$CONTROL_URL/report" >/dev/null
+          printf '{"schema":"sethia.stage8.g1-external-alert.v1","mode":"%s","runId":"%s","shard":%s,"code":"G1_SHARD_EVIDENCE_DELIVERED","severity":"info","externalSpendCents":0}\n' "$G1_MODE" "$G1_RUN_ID" "$G1_SHARD" > work/g1-event.json
+          curl -fsS -X POST -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" --data-binary @work/g1-event.json "$CONTROL_URL/event" >/dev/null
 
       - name: Remove ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f work/sethia/g1-config.json work/bundle.tar.gz
+        run: rm -f work/sethia/g1-config.json work/bundle.tar.gz work/g1-event.json
