@@ -1,4 +1,4 @@
-# orchestration: staggered-two-host-zero-loss-v3
+# orchestration: isolated-worker-crash-low-p95-v1
 name: Sethia G1 zero-euro qualification
 
 on:
