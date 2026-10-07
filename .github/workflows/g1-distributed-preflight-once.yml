@@ -1,0 +1,175 @@
+name: g1-distributed-preflight-once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/g1-distributed-preflight-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  shard:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SHARD: ${{ matrix.shard }}
+      DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+    steps:
+      - name: Checkout exact private candidate
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.SETHIA_REPOSITORY }}
+          ref: ${{ secrets.SETHIA_REF }}
+          ssh-key: ${{ secrets.SETHIA_DEPLOY_KEY }}
+          path: sethia
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Verify candidate identity
+        shell: bash
+        env:
+          EXPECTED_SOURCE_HEAD: ${{ secrets.G1_SOURCE_HEAD }}
+        run: |
+          set -euo pipefail
+          cd sethia
+          test "$(git rev-parse HEAD)" = "fb962f346ee857b745139f186ab019490315901b"
+          test "$(git rev-parse HEAD^{tree})" = "59c8d10d4f5673e10fd83efe7d156dc72bb5dff0"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_SOURCE_HEAD"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: sethia/.nvmrc
+          cache: npm
+          cache-dependency-path: sethia/package-lock.json
+
+      - name: Install dependencies
+        working-directory: sethia
+        run: npm ci --no-audit --no-fund
+
+      - name: Register distinct runner in shared Neon storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOST_ID="$(hostname)"
+          node - <<'NODE'
+          const path = require('path');
+          const { Client } = require(path.join(process.cwd(),'sethia','node_modules','pg'));
+          (async()=>{
+            const c=new Client({connectionString:process.env.DATABASE_URL,connectionTimeoutMillis:15000});
+            await c.connect();
+            await c.query('create schema if not exists sethia_stage8_g1_coord');
+            await c.query('create table if not exists sethia_stage8_g1_coord.runner_preflight(run_id text not null, shard int not null, host_id text not null, candidate_commit text not null, seen_at timestamptz not null default now(), primary key(run_id,shard))');
+            await c.query('insert into sethia_stage8_g1_coord.runner_preflight(run_id,shard,host_id,candidate_commit) values($1,$2,$3,$4) on conflict(run_id,shard) do update set host_id=excluded.host_id,candidate_commit=excluded.candidate_commit,seen_at=now()',[process.env.GITHUB_RUN_ID,Number(process.env.SHARD),process.env.HOST_ID,'fb962f346ee857b745139f186ab019490315901b']);
+            await c.end();
+            console.log('SHARED_COORDINATION_WRITE=PASS');
+          })().catch(e=>{console.error('SHARED_COORDINATION_WRITE=FAIL:'+e.name);process.exit(1)});
+          NODE
+
+      - name: Run remote Neon Sethia shard with worker restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/evidence"
+          TOKEN="t_$(openssl rand -hex 32)"
+          PORT=$((18080 + SHARD))
+          SCHEMA="sethia_g1_pf_${GITHUB_RUN_ID}_${SHARD}"
+          STOP="$RUNNER_TEMP/g1-stop-$SHARD"
+          LOG="$RUNNER_TEMP/g1-service-$SHARD.log"
+          export SETHIA_G1_TOKEN="$TOKEN"
+          export SETHIA_G1_ACTIVE_PLAYERS=500
+          export SETHIA_G1_SCHEMA="$SCHEMA"
+          export SETHIA_DATABASE_POOL_MAX=10
+          export PORT
+          service_loop() {
+            while [ ! -f "$STOP" ]; do
+              (cd sethia && npx tsx scripts/stage8-g1-cloud-service.ts) >>"$LOG" 2>&1 || true
+              [ -f "$STOP" ] && break
+              sleep 0.5
+            done
+          }
+          service_loop &
+          SUP_PID=$!
+          cleanup() {
+            touch "$STOP" || true
+            pkill -P "$SUP_PID" 2>/dev/null || true
+            kill "$SUP_PID" 2>/dev/null || true
+            pkill -f 'stage8-g1-cloud-service.ts' 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          READY=0
+          for i in $(seq 1 120); do
+            if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then READY=1; break; fi
+            sleep 0.5
+          done
+          if [ "$READY" != 1 ]; then tail -50 "$LOG" | sed -E 's#postgres(ql)?://[^ ]+#postgres://***#g'; exit 10; fi
+          export SETHIA_G1_BASE_URL="http://127.0.0.1:$PORT"
+          export SETHIA_G1_LIVE_SESSIONS=100
+          export SETHIA_G1_LOAD_CONCURRENCY=20
+          export SETHIA_G1_SESSION_OPEN_CONCURRENCY=50
+          export SETHIA_G1_SEED_BATCH=250
+          export SETHIA_G1_SEED_CONCURRENCY=2
+          export SETHIA_G1_MAX_RETRIES=3
+          export SETHIA_G1_MIN_INSTANCES=1
+          export SETHIA_G1_MIN_DURATION_MS=10000
+          export SETHIA_G1_EXTERNAL_QUALIFICATION=0
+          export SETHIA_G1_OUTPUT="$GITHUB_WORKSPACE/evidence/shard-$SHARD.json"
+          if [ "$SHARD" = 0 ]; then export SETHIA_G1_CHAOS_KILLS=1; else export SETHIA_G1_CHAOS_KILLS=0; fi
+          (cd sethia && npx tsx scripts/stage8-g1-cloud-campaign.ts)
+          node - <<'NODE'
+          const fs=require('fs'),os=require('os'),path=require('path');
+          const p=path.join(process.env.GITHUB_WORKSPACE,'evidence','runner-'+process.env.SHARD+'.json');
+          fs.writeFileSync(p,JSON.stringify({schema:'sethia.stage8.g1-runner-preflight.v1',runId:process.env.GITHUB_RUN_ID,shard:Number(process.env.SHARD),hostId:os.hostname(),runnerName:process.env.RUNNER_NAME,candidateCommit:'fb962f346ee857b745139f186ab019490315901b',verified:true,externalSpendCents:0},null,2)+'\n');
+          NODE
+
+      - name: Upload shard evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-pf-shard-${{ matrix.shard }}
+          path: evidence/
+          retention-days: 3
+
+  aggregate:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download shard evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: g1-pf-shard-*
+          path: evidence
+          merge-multiple: true
+
+      - name: Aggregate cross-host preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs=require('fs'),path=require('path');
+          const root='evidence';
+          const shards=[0,1,2,3].map(i=>JSON.parse(fs.readFileSync(path.join(root,`shard-${i}.json`),'utf8')));
+          const runners=[0,1,2,3].map(i=>JSON.parse(fs.readFileSync(path.join(root,`runner-${i}.json`),'utf8')));
+          const hosts=[...new Set(runners.map(r=>r.hostId))];
+          const out={schema:'sethia.stage8.g1-distributed-preflight.v1',generatedAt:new Date().toISOString(),prepared:true,executed:true,verified:shards.every(s=>s.invariantsPass===true)&&hosts.length===4,validated:false,shards:4,distinctHosts:hosts.length,totalPlayers:shards.reduce((a,s)=>a+s.target.activePlayers,0),totalSessions:shards.reduce((a,s)=>a+s.sessions.target,0),maxP95Ms:Math.max(...shards.map(s=>s.load.p95Ms)),maxP99Ms:Math.max(...shards.map(s=>s.load.p99Ms)),failedRequests:shards.reduce((a,s)=>a+s.load.failedRequests,0),workerKillRequested:shards.reduce((a,s)=>a+s.chaos.requestedKills,0),workerKillAccepted:shards.reduce((a,s)=>a+s.chaos.acceptedKills,0),externalSpendCents:0};
+          fs.writeFileSync('g1-distributed-preflight.json',JSON.stringify(out,null,2)+'\n');
+          console.log('DISTRIBUTED_PREFLIGHT='+ (out.verified?'PASS':'FAIL'));
+          console.log('HOSTS='+out.distinctHosts+' PLAYERS='+out.totalPlayers+' SESSIONS='+out.totalSessions+' P95='+out.maxP95Ms.toFixed(2)+' P99='+out.maxP99Ms.toFixed(2)+' ERRORS='+out.failedRequests+' KILLS='+out.workerKillAccepted+'/'+out.workerKillRequested);
+          if(!out.verified) process.exit(1);
+          NODE
+
+      - name: Upload aggregate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g1-distributed-preflight-aggregate
+          path: g1-distributed-preflight.json
+          retention-days: 3
