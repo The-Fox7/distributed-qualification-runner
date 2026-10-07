@@ -1,0 +1,33 @@
+name: runner-region-probe-once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/runner-region-probe-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        probe: [0, 1, 2, 3]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Detect Azure runner region
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGION="$(curl -fsS --noproxy '*' -H 'Metadata:true' 'http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text' || true)"
+          if [ -z "$REGION" ]; then
+            echo 'RUNNER_REGION=UNKNOWN'
+            exit 1
+          fi
+          case "$REGION" in
+            *[!A-Za-z0-9_-]*) echo 'RUNNER_REGION_INVALID'; exit 2 ;;
+          esac
+          echo "RUNNER_REGION=$REGION"
