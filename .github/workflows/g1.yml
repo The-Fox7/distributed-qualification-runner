@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: sethia-g1-zero-euro
+  group: sethia-g1-zero-euro-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
