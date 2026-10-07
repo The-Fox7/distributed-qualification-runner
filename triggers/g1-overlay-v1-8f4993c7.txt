@@ -1,0 +1,3 @@
+Sethia Stage 8 G1 zero-cost qualification trigger.
+Candidate overlay: 8f4993c7
+External spend authorized: 0 cents
