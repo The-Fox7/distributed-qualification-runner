@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   id-token: write
 
@@ -22,20 +22,27 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Wait until no older qualification run is active
+      - name: Cancel older qualification runs and wait for release
         shell: bash
         run: |
           set -euo pipefail
-          api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/g1.yml/runs?per_page=100"
-          for attempt in $(seq 1 140); do
-            payload="$(curl -fsS --retry 3 --retry-all-errors -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$api")"
-            active="$(printf '%s' "$payload" | jq --argjson current "$GITHUB_RUN_ID" '[.workflow_runs[] | select(.id != $current and (.status == "in_progress" or .status == "queued"))] | length')"
+          list_api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/g1.yml/runs?per_page=100"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
+          payload="$(curl -fsS --retry 3 --retry-all-errors "${auth[@]}" "$list_api")"
+          older_ids="$(printf '%s' "$payload" | jq -r --argjson current "$GITHUB_RUN_ID" '.workflow_runs[] | select(.id < $current and (.status == "in_progress" or .status == "queued")) | .id')"
+          for id in $older_ids; do
+            echo "CANCELLING_OLDER_G1_RUN=$id"
+            curl -fsS --retry 3 --retry-all-errors -X POST "${auth[@]}" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel" >/dev/null || true
+          done
+          for attempt in $(seq 1 30); do
+            payload="$(curl -fsS --retry 3 --retry-all-errors "${auth[@]}" "$list_api")"
+            active="$(printf '%s' "$payload" | jq --argjson current "$GITHUB_RUN_ID" '[.workflow_runs[] | select(.id < $current and (.status == "in_progress" or .status == "queued"))] | length')"
             if [ "$active" -eq 0 ]; then
               echo "OLDER_G1_RUNS=NONE"
               exit 0
             fi
             echo "OLDER_G1_RUNS_ACTIVE=$active"
-            sleep 15
+            sleep 5
           done
           echo "OLDER_G1_RUNS_TIMEOUT"
           exit 1
@@ -51,7 +58,7 @@ jobs:
     timeout-minutes: 40
     env:
       CONTROL_URL: https://jesus-administrators-innovations-mozilla.trycloudflare.com
-      BUNDLE_SHA256: 334920130ecba2dc4eadd0f4ac3268b151de9e0d93e79ff5d4c518d1bbea9ea2
+      BUNDLE_SHA256: 6a6c2a341fa1eebaea8c3f4704e235d8ca943565c9498403154c3f044e63391d
       G1_MODE: exact
       G1_EXPECTED_HOSTS: "8"
       G1_SHARD: ${{ matrix.shard }}
