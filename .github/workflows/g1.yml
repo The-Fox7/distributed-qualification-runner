@@ -10,8 +10,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: sethia-g1-zero-euro-${{ github.run_id }}
-  cancel-in-progress: false
+  group: sethia-g1-zero-euro
+  cancel-in-progress: true
 
 jobs:
   shard:
@@ -45,12 +45,12 @@ jobs:
           oidc="$(printf '%s' "$oidc_json" | jq -r .value)"
           test -n "$oidc"
           echo "::add-mask::$oidc"
-          curl -fsS -H "Authorization: Bearer $oidc" "$CONTROL_URL/bundle" -o work/bundle.tar.gz
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 1 -H "Authorization: Bearer $oidc" "$CONTROL_URL/bundle" -o work/bundle.tar.gz
           actual="$(sha256sum work/bundle.tar.gz | awk '{print $1}')"
           test "$actual" = "$BUNDLE_SHA256"
           tar -xzf work/bundle.tar.gz -C work/sethia
-          curl -fsS -H "Authorization: Bearer $oidc" "$CONTROL_URL/config" -o work/sethia/g1-config.json
-          curl -fsS -H "Authorization: Bearer $oidc" "$CONTROL_URL/runner" -o work/sethia/g1-runner.cjs
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 1 -H "Authorization: Bearer $oidc" "$CONTROL_URL/config" -o work/sethia/g1-config.json
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 1 -H "Authorization: Bearer $oidc" "$CONTROL_URL/runner" -o work/sethia/g1-runner.cjs
 
       - name: Install pinned Sethia dependencies
         shell: bash
@@ -75,9 +75,9 @@ jobs:
           oidc="$(printf '%s' "$oidc_json" | jq -r .value)"
           test -n "$oidc"
           echo "::add-mask::$oidc"
-          curl -fsS -X POST -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" --data-binary @work/sethia/g1-result.json "$CONTROL_URL/report" >/dev/null
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 1 -X POST -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" --data-binary @work/sethia/g1-result.json "$CONTROL_URL/report" >/dev/null
           printf '{"schema":"sethia.stage8.g1-external-alert.v1","mode":"%s","runId":"%s","shard":%s,"code":"G1_SHARD_EVIDENCE_DELIVERED","severity":"info","externalSpendCents":0}\n' "$G1_MODE" "$G1_RUN_ID" "$G1_SHARD" > work/g1-event.json
-          curl -fsS -X POST -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" --data-binary @work/g1-event.json "$CONTROL_URL/event" >/dev/null
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 1 -X POST -H "Authorization: Bearer $oidc" -H "Content-Type: application/json" --data-binary @work/g1-event.json "$CONTROL_URL/event" >/dev/null
 
       - name: Remove ephemeral credentials
         if: always()
