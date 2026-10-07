@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
-      CONTROL_URL: https://backgrounds-invited-ages-spanking.trycloudflare.com
+      CONTROL_URL: https://jesus-administrators-innovations-mozilla.trycloudflare.com
       BUNDLE_SHA256: 334920130ecba2dc4eadd0f4ac3268b151de9e0d93e79ff5d4c518d1bbea9ea2
       G1_MODE: exact
       G1_EXPECTED_HOSTS: "8"
