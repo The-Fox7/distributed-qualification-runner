@@ -1,4 +1,4 @@
-# orchestration: two-host-c1-isolated-worker-low-p95-v1
+# orchestration: two-host-c1-db-guards-low-p95-v2
 name: Sethia G1 zero-euro qualification
 
 on:
@@ -43,6 +43,10 @@ jobs:
           done
           echo "OLDER_G1_RUNS_TIMEOUT"
           exit 1
+
+      - name: Let Neon release cancelled connections
+        shell: bash
+        run: sleep 45
 
   shard:
     needs: wait-for-stale
