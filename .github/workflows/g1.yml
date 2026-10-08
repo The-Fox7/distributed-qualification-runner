@@ -52,7 +52,7 @@ jobs:
       matrix:
         shard: [0, 1]
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       CONTROL_URL: https://jesus-administrators-innovations-mozilla.trycloudflare.com
       BUNDLE_SHA256: 6a6c2a341fa1eebaea8c3f4704e235d8ca943565c9498403154c3f044e63391d
